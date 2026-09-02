@@ -7,7 +7,6 @@ List<CameraDescription> cameras = [];
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  // Allow both Landscape & Portrait
   await SystemChrome.setPreferredOrientations([
     DeviceOrientation.landscapeLeft,
     DeviceOrientation.landscapeRight,
@@ -166,12 +165,10 @@ class _TurfLandscapeScreenState extends State<TurfLandscapeScreen> {
     _prevYPlane = List<int>.from(yBytes);
     int now = DateTime.now().microsecondsSinceEpoch;
 
-    // Standing release snap filter
     if (motionBowler >= 8 && motionBowler <= 45 && _startMicroseconds == null) {
       _startMicroseconds = now;
     }
 
-    // Crease arrival trigger
     if (motionCrease >= 8 && motionCrease <= 50 && _startMicroseconds != null) {
       int delta = now - _startMicroseconds!;
       double seconds = delta / 1000000.0;
@@ -316,10 +313,9 @@ class _TurfLandscapeScreenState extends State<TurfLandscapeScreen> {
     bool isLandscape = screenWidth > screenHeight;
 
     return Scaffold(
-      backgroundColor: isNoBall ? Colors.red.shade950 : Colors.black,
+      backgroundColor: isNoBall ? Colors.red.shade900 : Colors.black,
       body: Stack(
         children: [
-          // Fullscreen Camera Feed
           SizedBox.expand(
             child: FittedBox(
               fit: BoxFit.cover,
@@ -331,7 +327,7 @@ class _TurfLandscapeScreenState extends State<TurfLandscapeScreen> {
             ),
           ),
 
-          // Cyan Calibration Line with Drag Handle
+          // Cyan Calibration Line
           Positioned(
             left: screenWidth * releaseLineX - 30,
             top: 0,
@@ -354,7 +350,7 @@ class _TurfLandscapeScreenState extends State<TurfLandscapeScreen> {
                       bottom: 80,
                       child: Container(
                         padding: EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                        decoration: BoxDecoration(color: Colors.black88, borderRadius: BorderRadius.circular(4), border: Border.all(color: Colors.cyanAccent)),
+                        decoration: BoxDecoration(color: Colors.black.withOpacity(0.85), borderRadius: BorderRadius.circular(4), border: Border.all(color: Colors.cyanAccent)),
                         child: Text(isBowlerOnLeft ? "RELEASE" : "CREASE", style: TextStyle(color: Colors.cyanAccent, fontSize: 9, fontWeight: FontWeight.bold)),
                       ),
                     ),
@@ -364,7 +360,7 @@ class _TurfLandscapeScreenState extends State<TurfLandscapeScreen> {
             ),
           ),
 
-          // Yellow/Amber Calibration Line with Drag Handle
+          // Yellow Calibration Line
           Positioned(
             left: screenWidth * creaseLineX - 30,
             top: 0,
@@ -387,7 +383,7 @@ class _TurfLandscapeScreenState extends State<TurfLandscapeScreen> {
                       bottom: 80,
                       child: Container(
                         padding: EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                        decoration: BoxDecoration(color: Colors.black88, borderRadius: BorderRadius.circular(4), border: Border.all(color: Colors.amberAccent)),
+                        decoration: BoxDecoration(color: Colors.black.withOpacity(0.85), borderRadius: BorderRadius.circular(4), border: Border.all(color: Colors.amberAccent)),
                         child: Text(isBowlerOnLeft ? "CREASE" : "RELEASE", style: TextStyle(color: Colors.amberAccent, fontSize: 9, fontWeight: FontWeight.bold)),
                       ),
                     ),
@@ -397,7 +393,7 @@ class _TurfLandscapeScreenState extends State<TurfLandscapeScreen> {
             ),
           ),
 
-          // Right Edge: Slim Ball History Log
+          // Right Log
           Positioned(
             top: isLandscape ? 8 : 110,
             right: 6,
@@ -455,7 +451,6 @@ class _TurfLandscapeScreenState extends State<TurfLandscapeScreen> {
               ),
               child: Row(
                 children: [
-                  // Bowler Picker
                   DropdownButton<int>(
                     value: activeBowlerIndex,
                     dropdownColor: Colors.grey.shade900,
@@ -468,7 +463,6 @@ class _TurfLandscapeScreenState extends State<TurfLandscapeScreen> {
                   ),
                   SizedBox(width: 8),
 
-                  // Turf Length & Speed Limit
                   Expanded(
                     child: Row(
                       children: [
@@ -496,7 +490,6 @@ class _TurfLandscapeScreenState extends State<TurfLandscapeScreen> {
                     ),
                   ),
 
-                  // Quick Buttons
                   IconButton(
                     icon: Icon(isNightMode ? Icons.nightlight_round : Icons.wb_sunny, size: 16, color: isNightMode ? Colors.indigoAccent : Colors.amberAccent),
                     onPressed: () => setState(() => isNightMode = !isNightMode),
