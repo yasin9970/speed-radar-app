@@ -9,39 +9,59 @@ Future<void> main() async {
   try {
     cameras = await availableCameras();
   } catch (e) {
-    print("Camera error: $e");
+    debugPrint("Camera error: $e");
   }
-  runApp(SpeedRadarApp());
+  runApp(TurfRadarApp());
 }
 
-class SpeedRadarApp extends StatelessWidget {
+class TurfRadarApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       theme: ThemeData.dark(),
-      home: AutoRadarScreen(),
+      home: TurfRadarScreen(),
     );
   }
 }
 
-class AutoRadarScreen extends StatefulWidget {
-  @override
-  _AutoRadarScreenState createState() => _AutoRadarScreenState();
+class TurfDelivery {
+  final String overBall;
+  final double speed;
+  final bool isNoBall;
+
+  TurfDelivery({required this.overBall, required this.speed, required this.isNoBall});
 }
 
-class _AutoRadarScreenState extends State<AutoRadarScreen> {
+class TurfRadarScreen extends StatefulWidget {
+  @override
+  _TurfRadarScreenState createState() => _TurfRadarScreenState();
+}
+
+class _TurfRadarScreenState extends State<TurfRadarScreen> {
   CameraController? _controller;
   final FlutterTts _tts = FlutterTts();
 
-  double speedLimit = 100.0;
-  double calculatedSpeed = 0.0;
-  bool isNoBall = false;
+  // Turf Settings
+  double pitchLength = 13.5; // Standard Turf (meters)
+  double speedLimit = 85.0; // Turf speed limit (km/h)
   bool isDetecting = false;
 
+  // Draggable Tripwire Positions (0.0 to 1.0 screen ratio)
+  double releaseLineX = 0.22;
+  double creaseLineX = 0.78;
+
+  // Live Radar State
+  double currentSpeed = 0.0;
+  double maxSpeed = 0.0;
+  bool isNoBall = false;
   int? _startMicroseconds;
-  final double pitchDistance = 20.12; // Standard Cricket Pitch in Meters
   List<int>? _prevYPlane;
+  bool _coolingDown = false;
+
+  // Turf Match Stats
+  int totalLegalBalls = 0;
+  List<TurfDelivery> history = [];
 
   @override
   void initState() {
@@ -69,16 +89,15 @@ class _AutoRadarScreenState extends State<AutoRadarScreen> {
     if (!mounted) return;
 
     _controller!.startImageStream((CameraImage image) {
-      if (isDetecting) {
-        _processFrame(image);
+      if (isDetecting && !_coolingDown) {
+        _processTurfFrame(image);
       }
     });
 
     setState(() {});
   }
 
-  void _processFrame(CameraImage image) {
-    // Luminance plane (Y plane) processing
+  void _processTurfFrame(CameraImage image) {
     final yBytes = image.planes[0].bytes;
     int width = image.width;
     int height = image.height;
@@ -88,62 +107,89 @@ class _AutoRadarScreenState extends State<AutoRadarScreen> {
       return;
     }
 
-    // Line 1: 25% screen width (Release Point)
-    // Line 2: 75% screen width (Crease/Stumps)
-    int col1 = (width * 0.25).toInt();
-    int col2 = (width * 0.75).toInt();
+    int col1 = (width * releaseLineX).toInt().clamp(0, width - 1);
+    int col2 = (width * creaseLineX).toInt().clamp(0, width - 1);
 
-    int motionLine1 = 0;
-    int motionLine2 = 0;
+    int motionRelease = 0;
+    int motionCrease = 0;
 
-    // Pixel difference sampling along the trigger lines
-    for (int row = 0; row < height; row += 8) {
+    // Turf Height Filter: Scan only between 25% and 75% height (ignores ground/feet)
+    int startY = (height * 0.25).toInt();
+    int endY = (height * 0.75).toInt();
+
+    for (int row = startY; row < endY; row += 6) {
       int idx1 = row * width + col1;
       int idx2 = row * width + col2;
 
-      if ((yBytes[idx1] - _prevYPlane![idx1]).abs() > 40) motionLine1++;
-      if ((yBytes[idx2] - _prevYPlane![idx2]).abs() > 40) motionLine2++;
+      // Tennis ball optical sensitivity threshold
+      if ((yBytes[idx1] - _prevYPlane![idx1]).abs() > 42) motionRelease++;
+      if ((yBytes[idx2] - _prevYPlane![idx2]).abs() > 42) motionCrease++;
     }
 
     _prevYPlane = List<int>.from(yBytes);
-
     int now = DateTime.now().microsecondsSinceEpoch;
 
-    // Trigger 1: Ball hits Line 1 (Bowler release)
-    if (motionLine1 > 10 && _startMicroseconds == null) {
+    // Trigger 1: Release Point (Small object filter: 4 to 35 pixel shift)
+    if (motionRelease >= 4 && motionRelease <= 35 && _startMicroseconds == null) {
       _startMicroseconds = now;
     }
 
-    // Trigger 2: Ball hits Line 2 (Crease)
-    if (motionLine2 > 10 && _startMicroseconds != null) {
+    // Trigger 2: Crease Point
+    if (motionCrease >= 4 && motionCrease <= 35 && _startMicroseconds != null) {
       int delta = now - _startMicroseconds!;
       double seconds = delta / 1000000.0;
 
-      // Realistic cricket ball duration filter (0.3s to 2.0s)
-      if (seconds >= 0.25 && seconds <= 2.2) {
-        double speed = (pitchDistance / seconds) * 3.6;
-        _onSpeedCaptured(speed);
+      // Realistic Turf Ball Timing (0.15s to 1.4s)
+      if (seconds >= 0.15 && seconds <= 1.4) {
+        double speed = (pitchLength / seconds) * 3.6;
+        _handleTurfDelivery(speed);
       }
       _startMicroseconds = null;
     }
 
-    // Auto-reset if ball missed line 2
-    if (_startMicroseconds != null && (now - _startMicroseconds!) > 2500000) {
+    // Auto-timeout if ball doesn't reach batsman in 1.8s
+    if (_startMicroseconds != null && (now - _startMicroseconds!) > 1800000) {
       _startMicroseconds = null;
     }
   }
 
-  void _onSpeedCaptured(double speed) async {
+  void _handleTurfDelivery(double speed) async {
+    _coolingDown = true;
     bool over = speed > speedLimit;
+
+    if (!over) totalLegalBalls++;
+    int overNum = totalLegalBalls ~/ 6;
+    int ballNum = totalLegalBalls % 6;
+    String overBallStr = over ? "NB" : "$overNum.$ballNum";
+
+    if (speed > maxSpeed) maxSpeed = speed;
+
+    final record = TurfDelivery(
+      overBall: overBallStr,
+      speed: speed,
+      isNoBall: over,
+    );
+
     setState(() {
-      calculatedSpeed = speed;
+      currentSpeed = speed;
       isNoBall = over;
+      history.insert(0, record);
+      if (history.length > 30) history.removeLast();
     });
 
     if (over) {
       await _tts.speak("Warning! No Ball! Speed ${speed.toInt()}");
     } else {
-      await _tts.speak("${speed.toInt()} km/h");
+      await _tts.speak("${speed.toInt()}");
+    }
+
+    // Turf Auto-Reset for next delivery
+    await Future.delayed(Duration(milliseconds: 2500));
+    if (mounted) {
+      setState(() {
+        isNoBall = false;
+        _coolingDown = false;
+      });
     }
   }
 
@@ -159,111 +205,215 @@ class _AutoRadarScreenState extends State<AutoRadarScreen> {
       return Scaffold(body: Center(child: CircularProgressIndicator()));
     }
 
+    double screenWidth = MediaQuery.of(context).size.width;
+
     return Scaffold(
       backgroundColor: isNoBall ? Colors.red.shade900 : Colors.black,
       body: Stack(
         children: [
-          // 1. Live Camera Preview
+          // 1. Live Camera Stream
           Center(child: CameraPreview(_controller!)),
 
-          // 2. Calibrated Trigger Lines (Tripwire)
-          Align(
-            alignment: Alignment(-0.5, 0), // 25% width
-            child: Container(
-              width: 3,
-              color: Colors.cyanAccent.withOpacity(0.8),
-              child: Center(
-                child: RotatedBox(
-                  quarterTurns: 3,
-                  child: Text("RELEASE LINE", style: TextStyle(color: Colors.cyanAccent, fontWeight: FontWeight.bold)),
-                ),
-              ),
-            ),
-          ),
-          Align(
-            alignment: Alignment(0.5, 0), // 75% width
-            child: Container(
-              width: 3,
-              color: Colors.amberAccent.withOpacity(0.8),
-              child: Center(
-                child: RotatedBox(
-                  quarterTurns: 3,
-                  child: Text("CREASE LINE", style: TextStyle(color: Colors.amberAccent, fontWeight: FontWeight.bold)),
+          // 2. Draggable Release Line (Bowler Hand)
+          Positioned(
+            left: screenWidth * releaseLineX - 25,
+            top: 0,
+            bottom: 0,
+            child: GestureDetector(
+              behavior: HitTestBehavior.translucent,
+              onHorizontalDragUpdate: (details) {
+                setState(() {
+                  releaseLineX = (releaseLineX + details.delta.dx / screenWidth).clamp(0.05, creaseLineX - 0.1);
+                });
+              },
+              child: Container(
+                width: 50,
+                child: Center(
+                  child: Container(
+                    width: 3,
+                    color: Colors.cyanAccent,
+                    child: Align(
+                      alignment: Alignment.center,
+                      child: RotatedBox(
+                        quarterTurns: 3,
+                        child: Text("DRAG RELEASE", style: TextStyle(color: Colors.cyanAccent, fontSize: 10, fontWeight: FontWeight.bold)),
+                      ),
+                    ),
+                  ),
                 ),
               ),
             ),
           ),
 
-          // 3. Top HUD: Speed & Alert
+          // 3. Draggable Crease Line (Batsman / Stumps)
+          Positioned(
+            left: screenWidth * creaseLineX - 25,
+            top: 0,
+            bottom: 0,
+            child: GestureDetector(
+              behavior: HitTestBehavior.translucent,
+              onHorizontalDragUpdate: (details) {
+                setState(() {
+                  creaseLineX = (creaseLineX + details.delta.dx / screenWidth).clamp(releaseLineX + 0.1, 0.95);
+                });
+              },
+              child: Container(
+                width: 50,
+                child: Center(
+                  child: Container(
+                    width: 3,
+                    color: Colors.amberAccent,
+                    child: Align(
+                      alignment: Alignment.center,
+                      child: RotatedBox(
+                        quarterTurns: 3,
+                        child: Text("DRAG CREASE", style: TextStyle(color: Colors.amberAccent, fontSize: 10, fontWeight: FontWeight.bold)),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+
+          // 4. Right Side: Turf Match Delivery History
+          Positioned(
+            top: 130,
+            right: 8,
+            bottom: 90,
+            width: 95,
+            child: Container(
+              padding: EdgeInsets.symmetric(vertical: 6, horizontal: 4),
+              decoration: BoxDecoration(
+                color: Colors.black.withOpacity(0.7),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: Colors.white24),
+              ),
+              child: Column(
+                children: [
+                  Text("TURF LOG", style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.grey.shade300)),
+                  Divider(color: Colors.white24, height: 6),
+                  Expanded(
+                    child: history.isEmpty
+                        ? Center(child: Text("No Balls", style: TextStyle(fontSize: 10, color: Colors.white38)))
+                        : ListView.builder(
+                            itemCount: history.length,
+                            itemBuilder: (ctx, i) {
+                              final item = history[i];
+                              return Container(
+                                margin: EdgeInsets.only(bottom: 4),
+                                padding: EdgeInsets.all(4),
+                                decoration: BoxDecoration(
+                                  color: item.isNoBall ? Colors.red.withOpacity(0.4) : Colors.black45,
+                                  borderRadius: BorderRadius.circular(6),
+                                  border: Border.all(color: item.isNoBall ? Colors.redAccent : Colors.greenAccent.withOpacity(0.5)),
+                                ),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(item.overBall, style: TextStyle(fontSize: 9, color: item.isNoBall ? Colors.redAccent : Colors.white70, fontWeight: FontWeight.bold)),
+                                    Text("${item.speed.toStringAsFixed(1)}", style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: item.isNoBall ? Colors.redAccent : Colors.greenAccent)),
+                                  ],
+                                ),
+                              );
+                            },
+                          ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+
+          // 5. Top Controls: Turf Size & Limit Controls
           SafeArea(
             child: Column(
               children: [
                 Container(
-                  margin: EdgeInsets.all(12),
-                  padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  margin: EdgeInsets.all(8),
+                  padding: EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                   decoration: BoxDecoration(
-                    color: Colors.black.withOpacity(0.75),
+                    color: Colors.black.withOpacity(0.85),
                     borderRadius: BorderRadius.circular(12),
                   ),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  child: Column(
                     children: [
-                      Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
-                          Text("LIMIT: ${speedLimit.toInt()} KM/H", style: TextStyle(fontWeight: FontWeight.bold)),
-                          SizedBox(
-                            width: 140,
+                          Text("TURF PITCH: ${pitchLength.toStringAsFixed(1)}m", style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.cyanAccent)),
+                          Text("LIMIT: ${speedLimit.toInt()} km/h", style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.orangeAccent)),
+                          Text("MAX: ${maxSpeed.toStringAsFixed(0)}", style: TextStyle(fontSize: 12, color: Colors.greenAccent)),
+                        ],
+                      ),
+                      Row(
+                        children: [
+                          Text("Turf:", style: TextStyle(fontSize: 10, color: Colors.white60)),
+                          Expanded(
+                            child: Slider(
+                              value: pitchLength,
+                              min: 10.0,
+                              max: 18.0,
+                              divisions: 16,
+                              activeColor: Colors.cyanAccent,
+                              onChanged: (v) => setState(() => pitchLength = v),
+                            ),
+                          ),
+                          Text("Limit:", style: TextStyle(fontSize: 10, color: Colors.white60)),
+                          Expanded(
                             child: Slider(
                               value: speedLimit,
-                              min: 40,
-                              max: 160,
-                              divisions: 24,
+                              min: 50.0,
+                              max: 130.0,
+                              divisions: 16,
+                              activeColor: Colors.orangeAccent,
                               onChanged: (v) => setState(() => speedLimit = v),
                             ),
                           ),
                         ],
                       ),
-                      Column(
-                        crossAxisAlignment: CrossAxisAlignment.end,
-                        children: [
-                          Text(
-                            "${calculatedSpeed.toStringAsFixed(1)}",
-                            style: TextStyle(
-                              fontSize: 36,
-                              fontWeight: FontWeight.bold,
-                              color: isNoBall ? Colors.redAccent : Colors.greenAccent,
-                            ),
-                          ),
-                          Text("KM/H", style: TextStyle(fontSize: 12, color: Colors.white70)),
-                        ],
-                      ),
                     ],
                   ),
                 ),
-                if (isNoBall)
+
+                // Main Speed Banner
+                if (currentSpeed > 0)
                   Container(
-                    padding: EdgeInsets.symmetric(horizontal: 20, vertical: 6),
-                    color: Colors.red,
-                    child: Text(
-                      "⚠️ NO BALL!",
-                      style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.white),
+                    margin: EdgeInsets.only(top: 4),
+                    padding: EdgeInsets.symmetric(horizontal: 20, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: isNoBall ? Colors.red : Colors.black.withOpacity(0.85),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: isNoBall ? Colors.white : Colors.greenAccent, width: 2),
+                    ),
+                    child: Column(
+                      children: [
+                        if (isNoBall)
+                          Text("⚠️ OVER-SPEED NO BALL!", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white)),
+                        Text(
+                          "${currentSpeed.toStringAsFixed(1)} KM/H",
+                          style: TextStyle(
+                            fontSize: 38,
+                            fontWeight: FontWeight.bold,
+                            color: isNoBall ? Colors.white : Colors.greenAccent,
+                          ),
+                        ),
+                      ],
                     ),
                   ),
               ],
             ),
           ),
 
-          // 4. Bottom Control Button
+          // 6. Bottom Radar Toggle Button
           Positioned(
-            bottom: 24,
+            bottom: 20,
             left: 20,
-            right: 20,
+            right: 120,
             child: ElevatedButton(
               style: ElevatedButton.styleFrom(
-                backgroundColor: isDetecting ? Colors.redAccent : Colors.green,
-                padding: EdgeInsets.symmetric(vertical: 16),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                backgroundColor: isDetecting ? Colors.redAccent : Colors.green.shade600,
+                padding: EdgeInsets.symmetric(vertical: 14),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
               ),
               onPressed: () {
                 setState(() {
@@ -272,8 +422,8 @@ class _AutoRadarScreenState extends State<AutoRadarScreen> {
                 });
               },
               child: Text(
-                isDetecting ? "STOP RADAR" : "START AUTO DETECTION",
-                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                isDetecting ? "PAUSE TURF RADAR" : "START TURF RADAR",
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
               ),
             ),
           ),
