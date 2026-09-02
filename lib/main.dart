@@ -1,7 +1,16 @@
 import 'package:flutter/material.dart';
+import 'package:camera/camera.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 
-void main() {
+List<CameraDescription> cameras = [];
+
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  try {
+    cameras = await availableCameras();
+  } catch (e) {
+    print("Camera error: $e");
+  }
   runApp(SpeedRadarApp());
 }
 
@@ -11,188 +20,264 @@ class SpeedRadarApp extends StatelessWidget {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       theme: ThemeData.dark(),
-      home: SpeedRadarScreen(),
+      home: AutoRadarScreen(),
     );
   }
 }
 
-class SpeedRadarScreen extends StatefulWidget {
+class AutoRadarScreen extends StatefulWidget {
   @override
-  _SpeedRadarScreenState createState() => _SpeedRadarScreenState();
+  _AutoRadarScreenState createState() => _AutoRadarScreenState();
 }
 
-class _SpeedRadarScreenState extends State<SpeedRadarScreen> {
-  final FlutterTts flutterTts = FlutterTts();
-  
-  double speedLimit = 100.0; // Default speed limit
-  double currentSpeed = 0.0;
-  bool isNoBall = false;
+class _AutoRadarScreenState extends State<AutoRadarScreen> {
+  CameraController? _controller;
+  final FlutterTts _tts = FlutterTts();
 
-  // Pitch timing variables
-  final Stopwatch _stopwatch = Stopwatch();
-  final double pitchDistanceInMeters = 20.12; // Standard Cricket Pitch
+  double speedLimit = 100.0;
+  double calculatedSpeed = 0.0;
+  bool isNoBall = false;
+  bool isDetecting = false;
+
+  int? _startMicroseconds;
+  final double pitchDistance = 20.12; // Standard Cricket Pitch in Meters
+  List<int>? _prevYPlane;
 
   @override
   void initState() {
     super.initState();
-    _initVoiceEngine();
+    _initTTS();
+    _initCamera();
   }
 
-  void _initVoiceEngine() async {
-    await flutterTts.setLanguage("en-US");
-    await flutterTts.setSpeechRate(0.65); // Ultra fast response
-    await flutterTts.setPitch(1.1);
+  void _initTTS() async {
+    await _tts.setLanguage("en-US");
+    await _tts.setSpeechRate(0.65);
+    await _tts.setPitch(1.0);
   }
 
-  void _onBallReleased() {
-    _stopwatch.reset();
-    _stopwatch.start();
-    setState(() {
-      isNoBall = false;
-    });
-  }
+  void _initCamera() async {
+    if (cameras.isEmpty) return;
+    _controller = CameraController(
+      cameras[0],
+      ResolutionPreset.medium,
+      enableAudio: false,
+      imageFormatGroup: ImageFormatGroup.yuv420,
+    );
 
-  void _onBallReachedCrease() async {
-    if (!_stopwatch.isRunning) return;
-    _stopwatch.stop();
+    await _controller!.initialize();
+    if (!mounted) return;
 
-    double timeInSeconds = _stopwatch.elapsedMilliseconds / 1000.0;
-    if (timeInSeconds <= 0.1) return; // False trigger ignore
-
-    // Speed (km/h) = (Distance / Time) * 3.6
-    double calculatedSpeed = (pitchDistanceInMeters / timeInSeconds) * 3.6;
-
-    bool overLimit = calculatedSpeed > speedLimit;
-
-    setState(() {
-      currentSpeed = calculatedSpeed;
-      isNoBall = overLimit;
+    _controller!.startImageStream((CameraImage image) {
+      if (isDetecting) {
+        _processFrame(image);
+      }
     });
 
-    if (overLimit) {
-      await flutterTts.speak("Warning! No Ball! Speed ${calculatedSpeed.toInt()}");
+    setState(() {});
+  }
+
+  void _processFrame(CameraImage image) {
+    // Luminance plane (Y plane) processing
+    final yBytes = image.planes[0].bytes;
+    int width = image.width;
+    int height = image.height;
+
+    if (_prevYPlane == null || _prevYPlane!.length != yBytes.length) {
+      _prevYPlane = List<int>.from(yBytes);
+      return;
+    }
+
+    // Line 1: 25% screen width (Release Point)
+    // Line 2: 75% screen width (Crease/Stumps)
+    int col1 = (width * 0.25).toInt();
+    int col2 = (width * 0.75).toInt();
+
+    int motionLine1 = 0;
+    int motionLine2 = 0;
+
+    // Pixel difference sampling along the trigger lines
+    for (int row = 0; row < height; row += 8) {
+      int idx1 = row * width + col1;
+      int idx2 = row * width + col2;
+
+      if ((yBytes[idx1] - _prevYPlane![idx1]).abs() > 40) motionLine1++;
+      if ((yBytes[idx2] - _prevYPlane![idx2]).abs() > 40) motionLine2++;
+    }
+
+    _prevYPlane = List<int>.from(yBytes);
+
+    int now = DateTime.now().microsecondsSinceEpoch;
+
+    // Trigger 1: Ball hits Line 1 (Bowler release)
+    if (motionLine1 > 10 && _startMicroseconds == null) {
+      _startMicroseconds = now;
+    }
+
+    // Trigger 2: Ball hits Line 2 (Crease)
+    if (motionLine2 > 10 && _startMicroseconds != null) {
+      int delta = now - _startMicroseconds!;
+      double seconds = delta / 1000000.0;
+
+      // Realistic cricket ball duration filter (0.3s to 2.0s)
+      if (seconds >= 0.25 && seconds <= 2.2) {
+        double speed = (pitchDistance / seconds) * 3.6;
+        _onSpeedCaptured(speed);
+      }
+      _startMicroseconds = null;
+    }
+
+    // Auto-reset if ball missed line 2
+    if (_startMicroseconds != null && (now - _startMicroseconds!) > 2500000) {
+      _startMicroseconds = null;
+    }
+  }
+
+  void _onSpeedCaptured(double speed) async {
+    bool over = speed > speedLimit;
+    setState(() {
+      calculatedSpeed = speed;
+      isNoBall = over;
+    });
+
+    if (over) {
+      await _tts.speak("Warning! No Ball! Speed ${speed.toInt()}");
     } else {
-      await flutterTts.speak("${calculatedSpeed.toInt()} km/h");
+      await _tts.speak("${speed.toInt()} km/h");
     }
   }
 
   @override
+  void dispose() {
+    _controller?.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
+    if (_controller == null || !_controller!.value.isInitialized) {
+      return Scaffold(body: Center(child: CircularProgressIndicator()));
+    }
+
     return Scaffold(
       backgroundColor: isNoBall ? Colors.red.shade900 : Colors.black,
-      appBar: AppBar(
-        title: Text("Cricket Speed Radar"),
-        backgroundColor: Colors.transparent,
-        elevation: 0,
-        centerTitle: true,
-      ),
-      body: SafeArea(
-        child: Column(
-          children: [
-            // 1. SPEED LIMIT SLIDER
-            Container(
-              margin: EdgeInsets.all(16),
-              padding: EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: Colors.grey.shade900,
-                borderRadius: BorderRadius.circular(16),
-                border: Border.all(color: Colors.white24),
+      body: Stack(
+        children: [
+          // 1. Live Camera Preview
+          Center(child: CameraPreview(_controller!)),
+
+          // 2. Calibrated Trigger Lines (Tripwire)
+          Align(
+            alignment: Alignment(-0.5, 0), // 25% width
+            child: Container(
+              width: 3,
+              color: Colors.cyanAccent.withOpacity(0.8),
+              child: Center(
+                child: RotatedBox(
+                  quarterTurns: 3,
+                  child: Text("RELEASE LINE", style: TextStyle(color: Colors.cyanAccent, fontWeight: FontWeight.bold)),
+                ),
               ),
-              child: Column(
-                children: [
-                  Row(
+            ),
+          ),
+          Align(
+            alignment: Alignment(0.5, 0), // 75% width
+            child: Container(
+              width: 3,
+              color: Colors.amberAccent.withOpacity(0.8),
+              child: Center(
+                child: RotatedBox(
+                  quarterTurns: 3,
+                  child: Text("CREASE LINE", style: TextStyle(color: Colors.amberAccent, fontWeight: FontWeight.bold)),
+                ),
+              ),
+            ),
+          ),
+
+          // 3. Top HUD: Speed & Alert
+          SafeArea(
+            child: Column(
+              children: [
+                Container(
+                  margin: EdgeInsets.all(12),
+                  padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withOpacity(0.75),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      Text("SPEED LIMIT:", style: TextStyle(fontWeight: FontWeight.bold)),
-                      Text(
-                        "${speedLimit.toInt()} KM/H",
-                        style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Colors.amberAccent),
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text("LIMIT: ${speedLimit.toInt()} KM/H", style: TextStyle(fontWeight: FontWeight.bold)),
+                          SizedBox(
+                            width: 140,
+                            child: Slider(
+                              value: speedLimit,
+                              min: 40,
+                              max: 160,
+                              divisions: 24,
+                              onChanged: (v) => setState(() => speedLimit = v),
+                            ),
+                          ),
+                        ],
+                      ),
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        children: [
+                          Text(
+                            "${calculatedSpeed.toStringAsFixed(1)}",
+                            style: TextStyle(
+                              fontSize: 36,
+                              fontWeight: FontWeight.bold,
+                              color: isNoBall ? Colors.redAccent : Colors.greenAccent,
+                            ),
+                          ),
+                          Text("KM/H", style: TextStyle(fontSize: 12, color: Colors.white70)),
+                        ],
                       ),
                     ],
                   ),
-                  Slider(
-                    value: speedLimit,
-                    min: 40.0,
-                    max: 160.0,
-                    divisions: 24,
-                    activeColor: Colors.amberAccent,
-                    onChanged: (val) => setState(() => speedLimit = val),
+                ),
+                if (isNoBall)
+                  Container(
+                    padding: EdgeInsets.symmetric(horizontal: 20, vertical: 6),
+                    color: Colors.red,
+                    child: Text(
+                      "⚠️ NO BALL!",
+                      style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.white),
+                    ),
                   ),
-                ],
-              ),
+              ],
             ),
+          ),
 
-            // 2. SPEED DISPLAY & NO-BALL ALERT
-            Expanded(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  if (isNoBall)
-                    Container(
-                      padding: EdgeInsets.symmetric(horizontal: 24, vertical: 8),
-                      margin: EdgeInsets.only(bottom: 12),
-                      decoration: BoxDecoration(
-                        color: Colors.red,
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: Text(
-                        "⚠️ NO BALL!",
-                        style: TextStyle(fontSize: 28, fontWeight: FontWeight.w900, color: Colors.white),
-                      ),
-                    ),
-                  Text(
-                    currentSpeed.toStringAsFixed(1),
-                    style: TextStyle(
-                      fontSize: 88,
-                      fontWeight: FontWeight.w900,
-                      color: isNoBall ? Colors.yellowAccent : Colors.greenAccent,
-                    ),
-                  ),
-                  Text(
-                    "KM/H",
-                    style: TextStyle(fontSize: 24, color: Colors.white60, letterSpacing: 2),
-                  ),
-                ],
+          // 4. Bottom Control Button
+          Positioned(
+            bottom: 24,
+            left: 20,
+            right: 20,
+            child: ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: isDetecting ? Colors.redAccent : Colors.green,
+                padding: EdgeInsets.symmetric(vertical: 16),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              ),
+              onPressed: () {
+                setState(() {
+                  isDetecting = !isDetecting;
+                  _startMicroseconds = null;
+                });
+              },
+              child: Text(
+                isDetecting ? "STOP RADAR" : "START AUTO DETECTION",
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
               ),
             ),
-
-            // 3. FAST TRIGGER BUTTONS
-            Padding(
-              padding: EdgeInsets.symmetric(horizontal: 16, vertical: 20),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: SizedBox(
-                      height: 80,
-                      child: ElevatedButton(
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.blue.shade700,
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                        ),
-                        onPressed: _onBallReleased,
-                        child: Text("1. RELEASE\n(Bowler)", textAlign: TextAlign.center, style: TextStyle(fontSize: 16)),
-                      ),
-                    ),
-                  ),
-                  SizedBox(width: 16),
-                  Expanded(
-                    child: SizedBox(
-                      height: 80,
-                      child: ElevatedButton(
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.orange.shade800,
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                        ),
-                        onPressed: _onBallReachedCrease,
-                        child: Text("2. CREASE\n(Impact)", textAlign: TextAlign.center, style: TextStyle(fontSize: 16)),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }

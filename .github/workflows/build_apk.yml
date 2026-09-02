@@ -26,6 +26,10 @@ jobs:
       - name: Generate Android Project Files
         run: flutter create --platforms=android .
 
+      - name: Add Camera Permission
+        run: |
+          sed -i '/<application/i <uses-permission android:name="android.permission.CAMERA"/>' android/app/src/main/AndroidManifest.xml
+
       - name: Install Dependencies
         run: flutter pub get
 

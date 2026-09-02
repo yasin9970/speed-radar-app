@@ -1,5 +1,5 @@
 name: speed_radar_app
-description: Cricket speed radar with no ball voice alert
+description: Cricket speed radar with camera auto-detection
 publish_to: 'none'
 version: 1.0.0+1
 
@@ -10,6 +10,7 @@ dependencies:
   flutter:
     sdk: flutter
   flutter_tts: ^4.2.2
+  camera: ^0.11.0+1
 
 flutter:
   uses-material-design: true
