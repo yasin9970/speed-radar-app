@@ -7,21 +7,28 @@ List<CameraDescription> cameras = [];
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // Allow both Landscape & Portrait
+  await SystemChrome.setPreferredOrientations([
+    DeviceOrientation.landscapeLeft,
+    DeviceOrientation.landscapeRight,
+    DeviceOrientation.portraitUp,
+  ]);
+
   try {
     cameras = await availableCameras();
   } catch (e) {
     debugPrint("Camera error: $e");
   }
-  runApp(TurfUltimateRadarApp());
+  runApp(TurfBeastRadarApp());
 }
 
-class TurfUltimateRadarApp extends StatelessWidget {
+class TurfBeastRadarApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       theme: ThemeData.dark(),
-      home: UltimateRadarScreen(),
+      home: TurfLandscapeScreen(),
     );
   }
 }
@@ -34,7 +41,6 @@ class BowlerStats {
   double totalSpeed = 0.0;
 
   BowlerStats({required this.name});
-
   double get avgSpeed => balls == 0 ? 0.0 : totalSpeed / balls;
 }
 
@@ -54,27 +60,27 @@ class DeliveryRecord {
   });
 }
 
-class UltimateRadarScreen extends StatefulWidget {
+class TurfLandscapeScreen extends StatefulWidget {
   @override
-  _UltimateRadarScreenState createState() => _UltimateRadarScreenState();
+  _TurfLandscapeScreenState createState() => _TurfLandscapeScreenState();
 }
 
-class _UltimateRadarScreenState extends State<UltimateRadarScreen> {
+class _TurfLandscapeScreenState extends State<TurfLandscapeScreen> {
   CameraController? _controller;
   final FlutterTts _tts = FlutterTts();
 
-  // Match Configuration
-  double pitchLength = 13.5; // Meters
-  double speedLimit = 85.0; // km/h
+  // Turf Match Settings
+  double pitchLength = 13.5;
+  double speedLimit = 85.0;
   bool isNightMode = false;
   bool isBowlerOnLeft = true;
   bool isDetecting = false;
 
-  // Draggable Screen Positions
-  double releaseLineX = 0.25;
-  double creaseLineX = 0.75;
+  // Draggable Calibration Lines
+  double releaseLineX = 0.20;
+  double creaseLineX = 0.80;
 
-  // Radar State
+  // Radar Processing State
   double currentSpeed = 0.0;
   double matchTopSpeed = 0.0;
   bool isNoBall = false;
@@ -82,11 +88,10 @@ class _UltimateRadarScreenState extends State<UltimateRadarScreen> {
   List<int>? _prevYPlane;
   bool _coolingDown = false;
 
-  // Bowlers & Match Stats
+  // Bowlers & Scorecard
   List<BowlerStats> bowlers = [
     BowlerStats(name: "Bowler 1"),
     BowlerStats(name: "Bowler 2"),
-    BowlerStats(name: "Bowler 3"),
   ];
   int activeBowlerIndex = 0;
   int legalBallsCount = 0;
@@ -97,7 +102,7 @@ class _UltimateRadarScreenState extends State<UltimateRadarScreen> {
   void initState() {
     super.initState();
     _initTTS();
-    _initFlagshipCamera();
+    _initCamera();
   }
 
   void _initTTS() async {
@@ -106,7 +111,7 @@ class _UltimateRadarScreenState extends State<UltimateRadarScreen> {
     await _tts.setPitch(1.0);
   }
 
-  void _initFlagshipCamera() async {
+  void _initCamera() async {
     if (cameras.isEmpty) return;
     _controller = CameraController(
       cameras[0],
@@ -120,14 +125,14 @@ class _UltimateRadarScreenState extends State<UltimateRadarScreen> {
 
     _controller!.startImageStream((CameraImage image) {
       if (isDetecting && !_coolingDown) {
-        _processFrame(image);
+        _processHighSpeedFrame(image);
       }
     });
 
     setState(() {});
   }
 
-  void _processFrame(CameraImage image) {
+  void _processHighSpeedFrame(CameraImage image) {
     final yBytes = image.planes[0].bytes;
     int width = image.width;
     int height = image.height;
@@ -161,12 +166,12 @@ class _UltimateRadarScreenState extends State<UltimateRadarScreen> {
     _prevYPlane = List<int>.from(yBytes);
     int now = DateTime.now().microsecondsSinceEpoch;
 
-    // Standing Bowler Release Detection
+    // Standing release snap filter
     if (motionBowler >= 8 && motionBowler <= 45 && _startMicroseconds == null) {
       _startMicroseconds = now;
     }
 
-    // Crease Trigger
+    // Crease arrival trigger
     if (motionCrease >= 8 && motionCrease <= 50 && _startMicroseconds != null) {
       int delta = now - _startMicroseconds!;
       double seconds = delta / 1000000.0;
@@ -183,13 +188,13 @@ class _UltimateRadarScreenState extends State<UltimateRadarScreen> {
     }
   }
 
-  void _triggerHardwareTorchStrobe() async {
+  void _triggerTorchStrobe() async {
     try {
       for (int i = 0; i < 4; i++) {
         await _controller?.setFlashMode(FlashMode.torch);
-        await Future.delayed(Duration(milliseconds: 100));
+        await Future.delayed(Duration(milliseconds: 90));
         await _controller?.setFlashMode(FlashMode.off);
-        await Future.delayed(Duration(milliseconds: 100));
+        await Future.delayed(Duration(milliseconds: 90));
       }
     } catch (_) {}
   }
@@ -205,15 +210,15 @@ class _UltimateRadarScreenState extends State<UltimateRadarScreen> {
 
     if (speed > matchTopSpeed) matchTopSpeed = speed;
 
-    BowlerStats currentBowler = bowlers[activeBowlerIndex];
-    currentBowler.balls++;
-    currentBowler.totalSpeed += speed;
-    if (speed > currentBowler.topSpeed) currentBowler.topSpeed = speed;
-    if (over) currentBowler.noBalls++;
+    BowlerStats cur = bowlers[activeBowlerIndex];
+    cur.balls++;
+    cur.totalSpeed += speed;
+    if (speed > cur.topSpeed) cur.topSpeed = speed;
+    if (over) cur.noBalls++;
 
     final record = DeliveryRecord(
       ballTag: tag,
-      bowler: currentBowler.name,
+      bowler: cur.name,
       speed: speed,
       isNoBall: over,
       durationMs: durationMs,
@@ -224,18 +229,18 @@ class _UltimateRadarScreenState extends State<UltimateRadarScreen> {
       isNoBall = over;
       lastDelivery = record;
       history.insert(0, record);
-      if (history.length > 30) history.removeLast();
+      if (history.length > 25) history.removeLast();
     });
 
     if (over) {
       HapticFeedback.heavyImpact();
-      _triggerHardwareTorchStrobe();
-      await _tts.speak("Siren! Warning! No Ball! Speed ${speed.toInt()}");
+      _triggerTorchStrobe();
+      await _tts.speak("Siren! No Ball! ${speed.toInt()}");
     } else {
       await _tts.speak("${speed.toInt()}");
     }
 
-    await Future.delayed(Duration(milliseconds: 2500));
+    await Future.delayed(Duration(milliseconds: 2400));
     if (mounted) {
       setState(() {
         isNoBall = false;
@@ -250,119 +255,45 @@ class _UltimateRadarScreenState extends State<UltimateRadarScreen> {
       context: context,
       builder: (ctx) => AlertDialog(
         backgroundColor: Colors.grey.shade900,
-        title: Row(
-          children: [
-            Icon(Icons.slow_motion_video, color: Colors.cyanAccent),
-            SizedBox(width: 8),
-            Text("DRS Ball Breakdown", style: TextStyle(color: Colors.white)),
-          ],
-        ),
+        title: Text("⚡ DRS Ball Analysis"),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text("Bowler: ${lastDelivery!.bowler}", style: TextStyle(fontSize: 14, color: Colors.white70)),
-            Divider(color: Colors.white24),
-            Text("Recorded Speed: ${lastDelivery!.speed.toStringAsFixed(1)} KM/H", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: lastDelivery!.isNoBall ? Colors.redAccent : Colors.greenAccent)),
-            SizedBox(height: 6),
-            Text("Pitch Length: ${pitchLength.toStringAsFixed(1)} Meters", style: TextStyle(color: Colors.white70)),
-            Text("Flight Transit Time: ${lastDelivery!.durationMs.toStringAsFixed(0)} ms (${(lastDelivery!.durationMs / 1000).toStringAsFixed(3)}s)", style: TextStyle(color: Colors.amberAccent)),
-            Text("Speed Limit: ${speedLimit.toInt()} KM/H", style: TextStyle(color: Colors.white70)),
-            SizedBox(height: 8),
-            Container(
-              padding: EdgeInsets.all(8),
-              color: lastDelivery!.isNoBall ? Colors.red.withOpacity(0.3) : Colors.green.withOpacity(0.3),
-              child: Center(
-                child: Text(
-                  lastDelivery!.isNoBall ? "DECISION: ⚠️ OVER-SPEED NO BALL" : "DECISION: ✔️ FAIR LEGAL DELIVERY",
-                  style: TextStyle(fontWeight: FontWeight.bold, color: Colors.white),
-                ),
-              ),
-            ),
+            Text("Bowler: ${lastDelivery!.bowler} (${lastDelivery!.ballTag})"),
+            Text("Speed: ${lastDelivery!.speed.toStringAsFixed(1)} KM/H", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: lastDelivery!.isNoBall ? Colors.redAccent : Colors.greenAccent)),
+            Text("Transit Time: ${lastDelivery!.durationMs.toStringAsFixed(0)} ms"),
+            Text("Turf Length: ${pitchLength.toStringAsFixed(1)} m | Limit: ${speedLimit.toInt()} km/h"),
           ],
         ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: Text("CLOSE")),
-        ],
+        actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: Text("OK"))],
       ),
     );
   }
 
   void _showSummaryModal() {
-    String summaryText = "🏏 *TURF CRICKET MATCH RADAR REPORT* 🏏\n"
-        "⚡ Highest Speed: ${matchTopSpeed.toStringAsFixed(1)} KM/H\n"
-        "🎯 Total Legal Deliveries: $legalBallsCount\n\n"
-        "*BOWLER PERFORMANCE:*\n";
-
+    String summary = "🏏 TURF MATCH REPORT 🏏\nTop Speed: ${matchTopSpeed.toStringAsFixed(1)} km/h\n";
     for (var b in bowlers) {
       if (b.balls > 0) {
-        summaryText += "👤 ${b.name}: ${b.balls} balls | Avg: ${b.avgSpeed.toStringAsFixed(1)} km/h | Top: ${b.topSpeed.toStringAsFixed(0)} km/h | NB: ${b.noBalls}\n";
+        summary += "${b.name}: ${b.balls}b | Avg ${b.avgSpeed.toStringAsFixed(0)} | Max ${b.topSpeed.toStringAsFixed(0)} (NB:${b.noBalls})\n";
       }
     }
-
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
         backgroundColor: Colors.grey.shade900,
-        title: Text("🏆 Match Radar Summary"),
-        content: SingleChildScrollView(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text("Top Speed: ${matchTopSpeed.toStringAsFixed(1)} KM/H", style: TextStyle(fontSize: 16, color: Colors.greenAccent, fontWeight: FontWeight.bold)),
-              Text("Legal Balls: $legalBallsCount", style: TextStyle(color: Colors.white70)),
-              Divider(color: Colors.white24),
-              ...bowlers.where((b) => b.balls > 0).map((b) => Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 4.0),
-                    child: Text("${b.name}: ${b.balls}b, Avg: ${b.avgSpeed.toStringAsFixed(0)}km/h, Max: ${b.topSpeed.toStringAsFixed(0)}km/h (NB: ${b.noBalls})"),
-                  )),
-            ],
-          ),
-        ),
+        title: Text("Match Summary"),
+        content: Text(summary),
         actions: [
-          ElevatedButton.icon(
-            icon: Icon(Icons.share, size: 16),
-            label: Text("Copy for WhatsApp"),
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.green.shade700),
-            onPressed: () {
-              Clipboard.setData(ClipboardData(text: summaryText));
-              Navigator.pop(ctx);
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text("Scorecard copied! Direct WhatsApp me paste karein.")),
-              );
-            },
-          ),
-          TextButton(onPressed: () => Navigator.pop(ctx), child: Text("DONE")),
-        ],
-      ),
-    );
-  }
-
-  void _addNewBowlerDialog() {
-    TextEditingController nameCtrl = TextEditingController();
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: Colors.grey.shade900,
-        title: Text("Add Bowler"),
-        content: TextField(
-          controller: nameCtrl,
-          decoration: InputDecoration(hintText: "Enter bowler name"),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: Text("CANCEL")),
           ElevatedButton(
+            child: Text("WhatsApp Copy"),
             onPressed: () {
-              if (nameCtrl.text.trim().isNotEmpty) {
-                setState(() {
-                  bowlers.add(BowlerStats(name: nameCtrl.text.trim()));
-                  activeBowlerIndex = bowlers.length - 1;
-                });
-                Navigator.pop(ctx);
-              }
+              Clipboard.setData(ClipboardData(text: summary));
+              Navigator.pop(ctx);
+              ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Copied!")));
             },
-            child: Text("ADD & SELECT"),
           ),
+          TextButton(onPressed: () => Navigator.pop(ctx), child: Text("CLOSE")),
         ],
       ),
     );
@@ -381,126 +312,127 @@ class _UltimateRadarScreenState extends State<UltimateRadarScreen> {
     }
 
     double screenWidth = MediaQuery.of(context).size.width;
+    double screenHeight = MediaQuery.of(context).size.height;
+    bool isLandscape = screenWidth > screenHeight;
 
     return Scaffold(
-      backgroundColor: isNoBall ? Colors.red.shade900 : Colors.black,
+      backgroundColor: isNoBall ? Colors.red.shade950 : Colors.black,
       body: Stack(
         children: [
-          Center(child: CameraPreview(_controller!)),
+          // Fullscreen Camera Feed
+          SizedBox.expand(
+            child: FittedBox(
+              fit: BoxFit.cover,
+              child: SizedBox(
+                width: _controller!.value.previewSize?.height ?? screenWidth,
+                height: _controller!.value.previewSize?.width ?? screenHeight,
+                child: CameraPreview(_controller!),
+              ),
+            ),
+          ),
 
-          // Draggable Bowler Line
+          // Cyan Calibration Line with Drag Handle
           Positioned(
-            left: screenWidth * releaseLineX - 25,
+            left: screenWidth * releaseLineX - 30,
             top: 0,
             bottom: 0,
             child: GestureDetector(
               behavior: HitTestBehavior.translucent,
-              onHorizontalDragUpdate: (details) {
+              onHorizontalDragUpdate: (d) {
                 setState(() {
-                  releaseLineX = (releaseLineX + details.delta.dx / screenWidth).clamp(0.05, 0.95);
+                  releaseLineX = (releaseLineX + d.delta.dx / screenWidth).clamp(0.05, 0.95);
                 });
               },
               child: Container(
-                width: 50,
-                child: Center(
-                  child: Container(
-                    width: 3,
-                    color: isBowlerOnLeft ? Colors.cyanAccent : Colors.amberAccent,
-                    child: Align(
-                      alignment: Alignment.center,
-                      child: RotatedBox(
-                        quarterTurns: 3,
-                        child: Text(
-                          isBowlerOnLeft ? "BOWLER RELEASE" : "BATSMAN CREASE",
-                          style: TextStyle(
-                            color: isBowlerOnLeft ? Colors.cyanAccent : Colors.amberAccent,
-                            fontSize: 10,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
+                width: 60,
+                color: Colors.transparent,
+                child: Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    Container(width: 3, color: isBowlerOnLeft ? Colors.cyanAccent : Colors.amberAccent),
+                    Positioned(
+                      bottom: 80,
+                      child: Container(
+                        padding: EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                        decoration: BoxDecoration(color: Colors.black88, borderRadius: BorderRadius.circular(4), border: Border.all(color: Colors.cyanAccent)),
+                        child: Text(isBowlerOnLeft ? "RELEASE" : "CREASE", style: TextStyle(color: Colors.cyanAccent, fontSize: 9, fontWeight: FontWeight.bold)),
                       ),
                     ),
-                  ),
+                  ],
                 ),
               ),
             ),
           ),
 
-          // Draggable Crease Line
+          // Yellow/Amber Calibration Line with Drag Handle
           Positioned(
-            left: screenWidth * creaseLineX - 25,
+            left: screenWidth * creaseLineX - 30,
             top: 0,
             bottom: 0,
             child: GestureDetector(
               behavior: HitTestBehavior.translucent,
-              onHorizontalDragUpdate: (details) {
+              onHorizontalDragUpdate: (d) {
                 setState(() {
-                  creaseLineX = (creaseLineX + details.delta.dx / screenWidth).clamp(0.05, 0.95);
+                  creaseLineX = (creaseLineX + d.delta.dx / screenWidth).clamp(0.05, 0.95);
                 });
               },
               child: Container(
-                width: 50,
-                child: Center(
-                  child: Container(
-                    width: 3,
-                    color: isBowlerOnLeft ? Colors.amberAccent : Colors.cyanAccent,
-                    child: Align(
-                      alignment: Alignment.center,
-                      child: RotatedBox(
-                        quarterTurns: 3,
-                        child: Text(
-                          isBowlerOnLeft ? "BATSMAN CREASE" : "BOWLER RELEASE",
-                          style: TextStyle(
-                            color: isBowlerOnLeft ? Colors.amberAccent : Colors.cyanAccent,
-                            fontSize: 10,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
+                width: 60,
+                color: Colors.transparent,
+                child: Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    Container(width: 3, color: isBowlerOnLeft ? Colors.amberAccent : Colors.cyanAccent),
+                    Positioned(
+                      bottom: 80,
+                      child: Container(
+                        padding: EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                        decoration: BoxDecoration(color: Colors.black88, borderRadius: BorderRadius.circular(4), border: Border.all(color: Colors.amberAccent)),
+                        child: Text(isBowlerOnLeft ? "CREASE" : "RELEASE", style: TextStyle(color: Colors.amberAccent, fontSize: 9, fontWeight: FontWeight.bold)),
                       ),
                     ),
-                  ),
+                  ],
                 ),
               ),
             ),
           ),
 
-          // Right Side Ball Log
+          // Right Edge: Slim Ball History Log
           Positioned(
-            top: 155,
-            right: 8,
-            bottom: 85,
-            width: 95,
+            top: isLandscape ? 8 : 110,
+            right: 6,
+            bottom: isLandscape ? 10 : 80,
+            width: 75,
             child: Container(
-              padding: EdgeInsets.symmetric(vertical: 6, horizontal: 4),
+              padding: EdgeInsets.symmetric(vertical: 4, horizontal: 2),
               decoration: BoxDecoration(
-                color: Colors.black.withOpacity(0.75),
-                borderRadius: BorderRadius.circular(10),
+                color: Colors.black.withOpacity(0.65),
+                borderRadius: BorderRadius.circular(8),
                 border: Border.all(color: Colors.white24),
               ),
               child: Column(
                 children: [
-                  Text("BALL LOG", style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.grey.shade300)),
-                  Divider(color: Colors.white24, height: 6),
+                  Text("LOG", style: TextStyle(fontSize: 9, fontWeight: FontWeight.bold, color: Colors.grey.shade400)),
+                  Divider(color: Colors.white24, height: 4),
                   Expanded(
                     child: history.isEmpty
-                        ? Center(child: Text("Ready...", style: TextStyle(fontSize: 10, color: Colors.white38)))
+                        ? Center(child: Text("Ready", style: TextStyle(fontSize: 9, color: Colors.white38)))
                         : ListView.builder(
                             itemCount: history.length,
                             itemBuilder: (ctx, i) {
-                              final item = history[i];
+                              final itm = history[i];
                               return Container(
-                                margin: EdgeInsets.only(bottom: 4),
-                                padding: EdgeInsets.all(4),
+                                margin: EdgeInsets.only(bottom: 3),
+                                padding: EdgeInsets.all(2),
                                 decoration: BoxDecoration(
-                                  color: item.isNoBall ? Colors.red.withOpacity(0.4) : Colors.black45,
-                                  borderRadius: BorderRadius.circular(6),
-                                  border: Border.all(color: item.isNoBall ? Colors.redAccent : Colors.greenAccent.withOpacity(0.5)),
+                                  color: itm.isNoBall ? Colors.red.withOpacity(0.35) : Colors.black45,
+                                  borderRadius: BorderRadius.circular(4),
+                                  border: Border.all(color: itm.isNoBall ? Colors.redAccent : Colors.greenAccent.withOpacity(0.4)),
                                 ),
                                 child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
-                                    Text("${item.bowler} (${item.ballTag})", style: TextStyle(fontSize: 8, color: Colors.white70)),
-                                    Text("${item.speed.toStringAsFixed(1)}", style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: item.isNoBall ? Colors.redAccent : Colors.greenAccent)),
+                                    Text(itm.ballTag, style: TextStyle(fontSize: 8, color: itm.isNoBall ? Colors.redAccent : Colors.white60)),
+                                    Text("${itm.speed.toStringAsFixed(0)}", style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: itm.isNoBall ? Colors.redAccent : Colors.greenAccent)),
                                   ],
                                 ),
                               );
@@ -512,154 +444,113 @@ class _UltimateRadarScreenState extends State<UltimateRadarScreen> {
             ),
           ),
 
-          // Top Configuration Panel
+          // Top Header HUD Bar
           SafeArea(
-            child: Column(
-              children: [
-                Container(
-                  margin: EdgeInsets.all(8),
-                  padding: EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-                  decoration: BoxDecoration(
-                    color: Colors.black.withOpacity(0.85),
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Column(
-                    children: [
-                      // Bowler Selector + Match Summary
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          DropdownButton<int>(
-                            value: activeBowlerIndex,
-                            dropdownColor: Colors.grey.shade900,
-                            underline: SizedBox(),
-                            items: List.generate(
-                              bowlers.length,
-                              (idx) => DropdownMenuItem(
-                                value: idx,
-                                child: Text("👤 ${bowlers[idx].name}", style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
-                              ),
-                            ),
-                            onChanged: (val) => setState(() => activeBowlerIndex = val ?? 0),
-                          ),
-                          IconButton(
-                            icon: Icon(Icons.person_add, size: 18, color: Colors.cyanAccent),
-                            onPressed: _addNewBowlerDialog,
-                          ),
-                          ElevatedButton.icon(
-                            style: ElevatedButton.styleFrom(backgroundColor: Colors.teal.shade800, padding: EdgeInsets.symmetric(horizontal: 8, vertical: 4)),
-                            icon: Icon(Icons.analytics, size: 14),
-                            label: Text("SUMMARY", style: TextStyle(fontSize: 10)),
-                            onPressed: _showSummaryModal,
-                          ),
-                        ],
-                      ),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          Text("TURF: ${pitchLength.toStringAsFixed(1)}m", style: TextStyle(fontSize: 11, color: Colors.cyanAccent)),
-                          Text("LIMIT: ${speedLimit.toInt()} km/h", style: TextStyle(fontSize: 11, color: Colors.orangeAccent)),
-                          Text("TOP: ${matchTopSpeed.toStringAsFixed(0)}", style: TextStyle(fontSize: 11, color: Colors.greenAccent)),
-                        ],
-                      ),
-                      Row(
-                        children: [
-                          Text("Pitch:", style: TextStyle(fontSize: 9, color: Colors.white60)),
-                          Expanded(
-                            child: Slider(
-                              value: pitchLength,
-                              min: 10.0,
-                              max: 18.0,
-                              divisions: 16,
-                              activeColor: Colors.cyanAccent,
-                              onChanged: (v) => setState(() => pitchLength = v),
-                            ),
-                          ),
-                          Text("Limit:", style: TextStyle(fontSize: 9, color: Colors.white60)),
-                          Expanded(
-                            child: Slider(
-                              value: speedLimit,
-                              min: 50.0,
-                              max: 130.0,
-                              divisions: 16,
-                              activeColor: Colors.orangeAccent,
-                              onChanged: (v) => setState(() => speedLimit = v),
-                            ),
-                          ),
-                        ],
-                      ),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                        children: [
-                          ElevatedButton.icon(
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: isNightMode ? Colors.indigo.shade900 : Colors.amber.shade700,
-                              padding: EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                            ),
-                            icon: Icon(isNightMode ? Icons.nightlight_round : Icons.wb_sunny, size: 12),
-                            label: Text(isNightMode ? "Night (LED)" : "Day Light", style: TextStyle(fontSize: 10)),
-                            onPressed: () => setState(() => isNightMode = !isNightMode),
-                          ),
-                          ElevatedButton.icon(
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: Colors.blueGrey.shade800,
-                              padding: EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                            ),
-                            icon: Icon(Icons.swap_horiz, size: 12),
-                            label: Text(isBowlerOnLeft ? "Bowler: Left" : "Bowler: Right", style: TextStyle(fontSize: 10)),
-                            onPressed: () => setState(() => isBowlerOnLeft = !isBowlerOnLeft),
-                          ),
-                          if (lastDelivery != null)
-                            ElevatedButton.icon(
-                              style: ElevatedButton.styleFrom(backgroundColor: Colors.deepPurple.shade700, padding: EdgeInsets.symmetric(horizontal: 8, vertical: 2)),
-                              icon: Icon(Icons.slow_motion_video, size: 12),
-                              label: Text("DRS", style: TextStyle(fontSize: 10)),
-                              onPressed: _showDrsModal,
-                            ),
-                        ],
-                      ),
-                    ],
-                  ),
-                ),
-
-                if (currentSpeed > 0)
-                  Container(
-                    margin: EdgeInsets.only(top: 2),
-                    padding: EdgeInsets.symmetric(horizontal: 20, vertical: 4),
-                    decoration: BoxDecoration(
-                      color: isNoBall ? Colors.red : Colors.black.withOpacity(0.85),
-                      borderRadius: BorderRadius.circular(10),
-                      border: Border.all(color: isNoBall ? Colors.white : Colors.greenAccent, width: 2),
+            child: Container(
+              margin: EdgeInsets.only(left: 6, top: 4, right: 86),
+              padding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              decoration: BoxDecoration(
+                color: Colors.black.withOpacity(0.80),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Row(
+                children: [
+                  // Bowler Picker
+                  DropdownButton<int>(
+                    value: activeBowlerIndex,
+                    dropdownColor: Colors.grey.shade900,
+                    underline: SizedBox(),
+                    items: List.generate(
+                      bowlers.length,
+                      (i) => DropdownMenuItem(value: i, child: Text(bowlers[i].name, style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold))),
                     ),
-                    child: Column(
+                    onChanged: (v) => setState(() => activeBowlerIndex = v ?? 0),
+                  ),
+                  SizedBox(width: 8),
+
+                  // Turf Length & Speed Limit
+                  Expanded(
+                    child: Row(
                       children: [
-                        if (isNoBall)
-                          Text("🚨 SIREN: OVER-SPEED NO BALL!", style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.white)),
-                        Text(
-                          "${currentSpeed.toStringAsFixed(1)} KM/H",
-                          style: TextStyle(
-                            fontSize: 34,
-                            fontWeight: FontWeight.bold,
-                            color: isNoBall ? Colors.white : Colors.greenAccent,
+                        Text("${pitchLength.toStringAsFixed(1)}m", style: TextStyle(fontSize: 10, color: Colors.cyanAccent)),
+                        Expanded(
+                          child: Slider(
+                            value: pitchLength,
+                            min: 10.0,
+                            max: 18.0,
+                            activeColor: Colors.cyanAccent,
+                            onChanged: (v) => setState(() => pitchLength = v),
+                          ),
+                        ),
+                        Text("${speedLimit.toInt()}k", style: TextStyle(fontSize: 10, color: Colors.orangeAccent)),
+                        Expanded(
+                          child: Slider(
+                            value: speedLimit,
+                            min: 50.0,
+                            max: 130.0,
+                            activeColor: Colors.orangeAccent,
+                            onChanged: (v) => setState(() => speedLimit = v),
                           ),
                         ),
                       ],
                     ),
                   ),
-              ],
+
+                  // Quick Buttons
+                  IconButton(
+                    icon: Icon(isNightMode ? Icons.nightlight_round : Icons.wb_sunny, size: 16, color: isNightMode ? Colors.indigoAccent : Colors.amberAccent),
+                    onPressed: () => setState(() => isNightMode = !isNightMode),
+                  ),
+                  IconButton(
+                    icon: Icon(Icons.swap_horiz, size: 16, color: Colors.white70),
+                    onPressed: () => setState(() => isBowlerOnLeft = !isBowlerOnLeft),
+                  ),
+                  if (lastDelivery != null)
+                    IconButton(
+                      icon: Icon(Icons.slow_motion_video, size: 16, color: Colors.purpleAccent),
+                      onPressed: _showDrsModal,
+                    ),
+                  IconButton(
+                    icon: Icon(Icons.analytics, size: 16, color: Colors.tealAccent),
+                    onPressed: _showSummaryModal,
+                  ),
+                ],
+              ),
             ),
           ),
 
-          // Start Radar Button
+          // Speed Alert Overlay
+          if (currentSpeed > 0)
+            Align(
+              alignment: Alignment.center,
+              child: Container(
+                padding: EdgeInsets.symmetric(horizontal: 20, vertical: 6),
+                decoration: BoxDecoration(
+                  color: isNoBall ? Colors.red : Colors.black.withOpacity(0.85),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: isNoBall ? Colors.white : Colors.greenAccent, width: 2),
+                ),
+                child: Text(
+                  isNoBall ? "🚨 NO BALL! ${currentSpeed.toStringAsFixed(1)} KM/H" : "${currentSpeed.toStringAsFixed(1)} KM/H",
+                  style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: isNoBall ? Colors.white : Colors.greenAccent),
+                ),
+              ),
+            ),
+
+          // Bottom Radar Start/Pause Button
           Positioned(
-            bottom: 16,
-            left: 20,
-            right: 120,
-            child: ElevatedButton(
+            bottom: 12,
+            left: 16,
+            child: ElevatedButton.icon(
               style: ElevatedButton.styleFrom(
                 backgroundColor: isDetecting ? Colors.redAccent : Colors.green.shade600,
-                padding: EdgeInsets.symmetric(vertical: 14),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                padding: EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+              ),
+              icon: Icon(isDetecting ? Icons.pause : Icons.play_arrow, size: 18),
+              label: Text(
+                isDetecting ? "PAUSE RADAR" : "START RADAR",
+                style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
               ),
               onPressed: () {
                 setState(() {
@@ -667,10 +558,6 @@ class _UltimateRadarScreenState extends State<UltimateRadarScreen> {
                   _startMicroseconds = null;
                 });
               },
-              child: Text(
-                isDetecting ? "PAUSE RADAR" : "START TURF RADAR",
-                style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-              ),
             ),
           ),
         ],
